@@ -33,8 +33,20 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Install TypeScript
-        run: npm install --no-save typescript
+      - name: Prepare Capacitor config
+        run: |
+          rm -f capacitor.config.ts
+          cat > capacitor.config.json <<'EOF'
+          {
+            "appId": "com.afitamine.coaching",
+            "appName": "A.FITAMINE",
+            "webDir": "www",
+            "backgroundColor": "#050507",
+            "android": {
+              "allowMixedContent": false
+            }
+          }
+          EOF
 
       - name: Add Android platform
         run: npx cap add android
