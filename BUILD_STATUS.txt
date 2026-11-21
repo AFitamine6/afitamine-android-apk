@@ -1,0 +1,7 @@
+A.FITAMINE Android build status
+Design pass: 0.3.0 (monochrome UI + jsPDF dossier export)
+Build method: GitHub Actions cloud workflow
+Workflow: .github/workflows/android-apk.yml
+Output: app-debug.apk (GitHub Actions artifact: AFITAMINE-debug-apk)
+Status: Workflow prepared; not yet run. No APK is included in this ZIP.
+Build requires the project to be uploaded to a GitHub repository and the workflow to complete.
