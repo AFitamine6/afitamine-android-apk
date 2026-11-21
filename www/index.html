@@ -14,10 +14,13 @@
     rel="stylesheet"
   />
 
-  <!-- PDF export engine -->\n  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.2/jspdf.umd.min.js"></script>\n\n  <!-- React 18 & Babel Standalone -->
+  <!-- React 18 & Babel Standalone -->
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Client-side PDF generation -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
   <style>
     * { box-sizing: border-box; }
@@ -32,8 +35,6 @@
       body { background: #ffffff !important; color: #000000 !important; }
     }
   </style>
-
-
 </head>
 <body>
   <div id="root"></div>
@@ -342,7 +343,7 @@
       </div>
     );
 
-    const InputField = ({ label, unit, type = 'number', value, onChange, step = 'any', min, max, ui }) => (
+    const InputField = ({ label, unit, type = 'number', value, onChange, step = 'any', min, max, ui, status }) => (
       <div className="flex flex-col gap-1.5">
         <label className={`text-xs font-medium tracking-wide flex justify-between ${ui.textMuted}`}>
           <span>{label}</span>
@@ -355,9 +356,12 @@
           min={min}
           max={max}
           onChange={(e) =>
-            onChange(type === 'number' ? parseFloat(e.target.value) || 0 : e.target.value)
+            // Keep the user's in-progress input exactly as entered. Converting an
+            // empty number field to 0 immediately makes browsers prepend that 0
+            // when the user starts typing a replacement value.
+            onChange(type === 'number' ? e.target.value : e.target.value)
           }
-          className={`w-full px-3.5 py-2.5 rounded-xl border text-sm font-medium tabular-nums focus:outline-none transition-all ${ui.input}`}
+          className={`w-full px-3.5 py-2.5 rounded-xl border text-sm font-medium tabular-nums focus:outline-none transition-all ${status === 'healthy' ? '!border-emerald-500/70 !bg-emerald-500/10 !text-emerald-500 focus:!ring-1 focus:!ring-emerald-500' : status === 'unhealthy' ? '!border-rose-500/70 !bg-rose-500/10 !text-rose-500 focus:!ring-1 focus:!ring-rose-500' : ui.input}`}
         />
       </div>
     );
@@ -499,7 +503,7 @@
         weeksToGoal = Math.max(1, Math.ceil(Math.abs(goalDeltaKg) / effectiveRate));
       }
 
-      const targetDateObj = new Date();
+      const targetDateObj = new Date(2026, 10, 21);
       targetDateObj.setDate(targetDateObj.getDate() + weeksToGoal * 7);
       const formattedTargetDate = targetDateObj.toLocaleDateString('en-US', {
         month: 'short',
@@ -938,122 +942,283 @@
         autoEstimateGoal: true
       }));
 
-      const [newLogDate, setNewLogDate] = useState(() => { const d = new Date(); const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000); return local.toISOString().slice(0, 10); });
+      const [newLogDate, setNewLogDate] = useState('2026-11-21');
       const [newLogWeight, setNewLogWeight] = useState('');
       const [newLogNotes, setNewLogNotes] = useState('');
       const [copiedBanner, setCopiedBanner] = useState(false);
 
       const handleExportPdfDossier = async () => {
-        const JsPDF = window.jspdf?.jsPDF;
-        if (!JsPDF) {
-          alert('PDF export could not load. Check your internet connection and try again.');
-          return;
-        }
-        const doc = new JsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-        const pageW = doc.internal.pageSize.getWidth();
-        const pageH = doc.internal.pageSize.getHeight();
-        const m = 14, cw = pageW - 2 * m;
-        let y = 18;
-        const rule = () => { doc.setDrawColor(190); doc.setLineWidth(.25); doc.line(m, y, pageW-m, y); };
-        const space = (h=10) => { if (y+h > pageH-15) { doc.addPage(); y=18; } };
-        const section = title => {
-          space(16); y += 3; doc.setFont('helvetica','bold'); doc.setFontSize(10);
-          doc.setTextColor(30); doc.text(String(title).toUpperCase(),m,y); y+=2; rule(); y+=6;
-        };
-        const field = (label,value) => {
-          const labelText = `${label}: `;
-          doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(90);
-          doc.text(labelText,m,y);
-          const lw=doc.getTextWidth(labelText);
-          doc.setFont('helvetica','normal'); doc.setTextColor(25);
-          const wrapped=doc.splitTextToSize(String(value ?? '—'),cw-lw);
-          doc.text(wrapped,m+lw,y); y+=Math.max(5,wrapped.length*4.1); space(5);
-        };
-        const table = (headers,rows,widths) => {
-          const draw=(cells,isHead=false)=>{
-            space(8); let x=m;
-            cells.forEach((cell,i)=>{
-              const w=widths[i];
-              if(isHead){doc.setFillColor(232);doc.rect(x,y-4,w,6,'F');}
-              doc.setFont('helvetica',isHead?'bold':'normal');doc.setFontSize(7);doc.setTextColor(45);
-              const wrapped=doc.splitTextToSize(String(cell ?? '—'),w-3);
-              doc.text(wrapped.slice(0,1),x+1.5,y);x+=w;
+        const assessmentItems = [
+          { label: 'Bodyweight Squat', val: activeClient.assessments.squatPattern || 7 },
+          { label: 'Hip Hinge', val: activeClient.assessments.hipHinge || 7 },
+          { label: 'Horizontal Push', val: activeClient.assessments.horizontalPush || 7 },
+          { label: 'Horizontal Pull', val: activeClient.assessments.horizontalPull || 7 },
+          { label: 'Overhead Reach', val: activeClient.assessments.overheadReach || 7 },
+          { label: 'Single-Leg & Core', val: activeClient.assessments.singleLegCore || 7 }
+        ];
+
+        const escapeHtml = (str) =>
+          String(str ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+
+        const scheduleRows = activeClient.trainingSplit.schedule
+          .map(
+            (s) => `
+              <tr>
+                <td style="padding:7px 10px;border-bottom:1px solid #e4e4e7;font-weight:700;">${escapeHtml(s.day)}</td>
+                <td style="padding:7px 10px;border-bottom:1px solid #e4e4e7;">${escapeHtml(s.focus)}</td>
+                <td style="padding:7px 10px;border-bottom:1px solid #e4e4e7;color:#52525b;">${escapeHtml(s.exercises)}</td>
+                <td style="padding:7px 10px;border-bottom:1px solid #e4e4e7;font-family:monospace;text-align:right;">${escapeHtml(s.rpe)}</td>
+              </tr>
+            `
+          )
+          .join('');
+
+        const movementCards = assessmentItems
+          .map(
+            (it) => `
+              <div style="display:flex;justify-content:space-between;padding:7px 10px;border:1px solid #e4e4e7;border-radius:8px;font-size:12px;">
+                <span>${escapeHtml(it.label)}</span>
+                <strong>${it.val}/10</strong>
+              </div>
+            `
+          )
+          .join('');
+
+        const recentLogsRows = [...metrics.sortedLogs]
+          .reverse()
+          .slice(0, 6)
+          .map(
+            (log) => `
+              <tr>
+                <td style="padding:6px 10px;border-bottom:1px solid #e4e4e7;font-family:monospace;">${escapeHtml(log.date)}</td>
+                <td style="padding:6px 10px;border-bottom:1px solid #e4e4e7;font-family:monospace;font-weight:700;">${escapeHtml(log.weight)} kg</td>
+                <td style="padding:6px 10px;border-bottom:1px solid #e4e4e7;color:#52525b;">${escapeHtml(log.notes)}</td>
+              </tr>
+            `
+          )
+          .join('');
+
+        const dossierHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>A.FITAMINE Dossier — ${escapeHtml(activeClient.name)}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #111827; margin: 28px; line-height: 1.45; }
+    .top { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #111827; padding-bottom: 14px; margin-bottom: 20px; }
+    .brand { font-size: 11px; font-weight: 800; letter-spacing: 0.18em; text-transform: uppercase; color: #52525b; }
+    h1 { margin: 4px 0; font-size: 24px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-bottom: 20px; }
+    .box { border: 1px solid #d4d4d8; border-radius: 10px; padding: 12px 14px; background: #fafafa; }
+    .label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #71717a; font-weight: 700; }
+    .val { font-size: 20px; font-weight: 800; margin-top: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .sub { font-size: 12px; color: #52525b; margin-top: 2px; }
+    h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 10px 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .notes { margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: #f4f4f5; font-size: 12px; }
+    @media print {
+      body { margin: 14px; }
+      .no-print { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <div>
+      <div class="brand">A.FITAMINE • COACHING AGENT EXECUTIVE DOSSIER</div>
+      <h1>${escapeHtml(activeClient.name)}</h1>
+      <div class="sub">${escapeHtml(activeClient.role)} • ${escapeHtml(activeClient.age)} yrs • ${escapeHtml(activeClient.heightCm)} cm • ${escapeHtml(activeClient.sex.toUpperCase())}</div>
+    </div>
+    <div style="text-align:right;font-size:12px;">
+      <div><strong>Current:</strong> ${escapeHtml(activeClient.weightKg)} kg</div>
+      <div><strong>Target:</strong> ${escapeHtml(activeClient.goalWeightKg)} kg</div>
+      <div><strong>Est. Date:</strong> ${escapeHtml(metrics.formattedTargetDate)}</div>
+    </div>
+  </div>
+
+  <div class="grid-4">
+    <div class="box">
+      <div class="label">BMI & Corridor</div>
+      <div class="val">${escapeHtml(metrics.bmi)}</div>
+      <div class="sub">${escapeHtml(metrics.bmiCategory)} (${escapeHtml(metrics.minHealthyWeight)}–${escapeHtml(metrics.maxHealthyWeight)} kg)</div>
+    </div>
+    <div class="box">
+      <div class="label">Body Fat (Neck/Waist/Hip)</div>
+      <div class="val">${escapeHtml(metrics.estimatedBf)}%</div>
+      <div class="sub">${escapeHtml(metrics.bfCategory)} • LBM ${escapeHtml(metrics.leanMassKg)} kg</div>
+    </div>
+    <div class="box">
+      <div class="label">Metabolic TDEE</div>
+      <div class="val">${escapeHtml(metrics.tdee)} kcal</div>
+      <div class="sub">BMR ${escapeHtml(metrics.bmr)} • NEAT ${escapeHtml(metrics.neat)} • TEA ${escapeHtml(metrics.tea)}</div>
+    </div>
+    <div class="box">
+      <div class="label">Daily Target Intake</div>
+      <div class="val">${escapeHtml(metrics.targetCalories)} kcal</div>
+      <div class="sub">${escapeHtml(metrics.proteinGrams)}g P • ${escapeHtml(metrics.carbGrams)}g C • ${escapeHtml(metrics.fatGrams)}g F</div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="box">
+      <h2>Clinical Vitals & Notes</h2>
+      <div class="sub"><strong>RHR:</strong> ${escapeHtml(activeClient.restingHR)} bpm • <strong>BP:</strong> ${escapeHtml(activeClient.bpSystolic)}/${escapeHtml(activeClient.bpDiastolic)} mmHg</div>
+      <div class="sub"><strong>Sleep:</strong> ${escapeHtml(activeClient.sleepHours)}h • <strong>Hydration:</strong> ${escapeHtml(activeClient.hydrationLiters)}L • <strong>Stress:</strong> ${escapeHtml(activeClient.stressScore)}/10</div>
+      <div class="notes"><strong>Medical / Orthopedic:</strong> ${escapeHtml(activeClient.medicalNotes)}</div>
+    </div>
+    <div class="box">
+      <h2>Recent Weight Check-Ins</h2>
+      <table>
+        <tbody>${recentLogsRows}</tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="box" style="margin-bottom:20px;">
+    <h2>Training Split — ${escapeHtml(activeClient.trainingSplit.templateName)} (${escapeHtml(activeClient.trainingSplit.daysPerWeek)} Days/Wk)</h2>
+    <table>
+      <tbody>${scheduleRows}</tbody>
+    </table>
+  </div>
+
+  <div class="box">
+    <h2>First-Session Basic Movement Screen</h2>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px;">
+      ${movementCards}
+    </div>
+    <div class="notes"><strong>Coach Remarks:</strong> ${escapeHtml(activeClient.assessments.coachNotes)}</div>
+  </div>
+
+</body>
+</html>`;
+
+        // Build a self-contained PDF using the browser's native Blob download.
+        // This avoids html2canvas/jsPDF CDN failures and iframe rendering issues.
+        const exportButton = document.querySelector('[data-pdf-export]');
+        if (exportButton) exportButton.disabled = true;
+        try {
+          const clean = (value) => String(value ?? '')
+            .normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+            .replace(/[–—•·]/g, '-').replace(/[^\x20-\x7E]/g, '');
+          const wrap = (value, max = 88) => {
+            const words = clean(value).split(/\s+/);
+            const out = []; let line = '';
+            words.forEach((word) => {
+              if (!word) return;
+              if ((line + ' ' + word).trim().length > max && line) { out.push(line); line = word; }
+              else line = (line ? line + ' ' : '') + word;
             });
-            y+=6;if(!isHead){doc.setDrawColor(220);doc.line(m,y-2,pageW-m,y-2);}
+            if (line) out.push(line);
+            return out.length ? out : [''];
           };
-          draw(headers,true); rows.forEach(r=>draw(r)); y+=2;
-        };
-        doc.setFillColor(15);doc.rect(0,0,pageW,9,'F');
-        doc.setFont('helvetica','bold');doc.setFontSize(8);doc.setTextColor(255);
-        doc.text('A.FITAMINE  /  COACHING DOSSIER',m,6);
-        doc.setTextColor(20);doc.setFontSize(21);
-        doc.text(String(activeClient.name||'Client').slice(0,48),m,y+5);y+=12;
-        doc.setFont('helvetica','normal');doc.setFontSize(8);doc.setTextColor(85);
-        doc.text(`${activeClient.role||'Client'} • ${activeClient.age} yrs • ${activeClient.heightCm} cm • ${String(activeClient.sex||'').toUpperCase()}`,m,y);
-        doc.text(`Report date: ${new Date().toLocaleDateString()}`,pageW-m,y,{align:'right'});y+=7;rule();y+=8;
+          const lines = [];
+          const add = (value = '') => wrap(value).forEach((line) => lines.push(line));
+          const section = (heading) => { lines.push(''); add(heading.toUpperCase()); add('-'.repeat(Math.min(heading.length, 72))); };
 
-        const metricsCards=[
-          ['BMI',metrics.bmi,metrics.bmiCategory],['BODY FAT',`${metrics.estimatedBf}%`,metrics.bfCategory],
-          ['TDEE',`${metrics.tdee} kcal`,'Daily expenditure'],['CALORIE TARGET',`${metrics.targetCalories} kcal`,'Daily intake']
-        ];
-        const gap=4,boxW=(cw-gap*3)/4;
-        metricsCards.forEach((it,i)=>{
-          const x=m+i*(boxW+gap);doc.setFillColor(244);doc.setDrawColor(215);doc.roundedRect(x,y,boxW,20,1.5,1.5,'FD');
-          doc.setFont('helvetica','bold');doc.setFontSize(6.5);doc.setTextColor(95);doc.text(it[0],x+2.5,y+5);
-          doc.setFontSize(11);doc.setTextColor(20);doc.text(String(it[1]),x+2.5,y+12.5);
-          doc.setFont('helvetica','normal');doc.setFontSize(6);doc.setTextColor(90);doc.text(String(it[2]||'').slice(0,25),x+2.5,y+17);
-        });y+=25;
+          add('A.FITAMINE | COACHING AGENT EXECUTIVE DOSSIER');
+          add(activeClient.name);
+          add(`${activeClient.role} | Age ${activeClient.age} | ${activeClient.heightCm} cm | ${activeClient.sex}`);
+          add(`Generated: ${new Date().toLocaleDateString()}`);
+          section('Client Overview');
+          add(`Current weight: ${activeClient.weightKg} kg | Target weight: ${activeClient.goalWeightKg} kg`);
+          add(`Estimated target date: ${metrics.formattedTargetDate}`);
+          add(`BMI: ${metrics.bmi} (${metrics.bmiCategory}) | Healthy weight corridor: ${metrics.minHealthyWeight}-${metrics.maxHealthyWeight} kg`);
+          add(`Estimated body fat: ${metrics.estimatedBf}% (${metrics.bfCategory}) | Lean mass: ${metrics.leanMassKg} kg`);
+          section('Metabolic & Nutrition');
+          add(`BMR: ${metrics.bmr} kcal | TDEE: ${metrics.tdee} kcal | NEAT: ${metrics.neat} | TEA: ${metrics.tea}`);
+          add(`Daily calorie target: ${metrics.targetCalories} kcal`);
+          add(`Macros: Protein ${metrics.proteinGrams} g | Carbs ${metrics.carbGrams} g | Fat ${metrics.fatGrams} g`);
+          section('Clinical Vitals & Notes');
+          add(`Resting heart rate: ${activeClient.restingHR} bpm`);
+          add(`Blood pressure: ${activeClient.bpSystolic}/${activeClient.bpDiastolic} mmHg`);
+          add(`Sleep: ${activeClient.sleepHours} hours | Hydration: ${activeClient.hydrationLiters} L | Stress: ${activeClient.stressScore}/10`);
+          add(`Medical / orthopedic notes: ${activeClient.medicalNotes || 'None recorded'}`);
+          section('Recent Weight Check-ins');
+          [...metrics.sortedLogs].reverse().slice(0, 10).forEach((log) => add(`${log.date} | ${log.weight} kg | ${log.notes || ''}`));
+          section(`Training Split - ${activeClient.trainingSplit.templateName} (${activeClient.trainingSplit.daysPerWeek} days/week)`);
+          activeClient.trainingSplit.schedule.forEach((item) => {
+            add(`${item.day}: ${item.focus} | ${item.exercises} | RPE ${item.rpe}`);
+          });
+          section('First-Session Basic Movement Screen');
+          [
+            ['Bodyweight Squat', activeClient.assessments.squatPattern],
+            ['Hip Hinge', activeClient.assessments.hipHinge],
+            ['Horizontal Push', activeClient.assessments.horizontalPush],
+            ['Horizontal Pull', activeClient.assessments.horizontalPull],
+            ['Overhead Reach', activeClient.assessments.overheadReach],
+            ['Single-Leg & Core', activeClient.assessments.singleLegCore]
+          ].forEach(([label, value]) => add(`${label}: ${value ?? 'Not assessed'}/10`));
+          add(`Coach remarks: ${activeClient.assessments.coachNotes || 'None recorded'}`);
 
-        section('Client overview');
-        field('Current weight',`${activeClient.weightKg} kg`);
-        field('Goal weight',`${activeClient.goalWeightKg} kg`);
-        field('Estimated goal date',metrics.formattedTargetDate);
-        field('Healthy weight corridor',`${metrics.minHealthyWeight}–${metrics.maxHealthyWeight} kg`);
-        field('Lean body mass',`${metrics.leanMassKg} kg`);
-        field('BMR / NEAT / TEA',`${metrics.bmr} / ${metrics.neat} / ${metrics.tea} kcal`);
-        field('Macro targets',`${metrics.proteinGrams} g protein • ${metrics.carbGrams} g carbs • ${metrics.fatGrams} g fat`);
+          // A4 PDF pages, Helvetica text; all strings are sanitized to printable ASCII.
+          const pageLines = [];
+          for (let i = 0; i < lines.length; i += 52) pageLines.push(lines.slice(i, i + 52));
+          if (!pageLines.length) pageLines.push(['A.FITAMINE Client Dossier']);
+          const objects = [];
+          const pageObjectIds = [];
+          const fontId = 3 + pageLines.length * 2;
+          objects[1] = '<< /Type /Catalog /Pages 2 0 R >>';
+          const kids = pageLines.map((_, i) => `${3 + i * 2} 0 R`).join(' ');
+          objects[2] = `<< /Type /Pages /Kids [${kids}] /Count ${pageLines.length} >>`;
+          pageLines.forEach((page, i) => {
+            const pageId = 3 + i * 2;
+            const contentId = pageId + 1;
+            pageObjectIds.push(pageId);
+            let stream = 'BT\n/F1 9 Tf\n48 794 Td\n13 TL\n';
+            page.forEach((line, lineIndex) => {
+              const safe = clean(line).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+              if (lineIndex === 0 && i === 0) stream += '/F1 15 Tf\n';
+              else if (lineIndex === 1 && i === 0) stream += '/F1 12 Tf\n';
+              else if (line.trim() && line === line.toUpperCase() && line.length < 80) stream += '/F1 10 Tf\n';
+              else stream += '/F1 9 Tf\n';
+              stream += `(${safe}) Tj\nT*\n`;
+            });
+            stream += 'ET';
+            objects[pageId] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${contentId} 0 R >>`;
+            objects[contentId] = `<< /Length ${new TextEncoder().encode(stream).length} >>\nstream\n${stream}\nendstream`;
+          });
+          objects[fontId] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>';
+          let pdfText = '%PDF-1.4\n%AFITAMINE\n';
+          const offsets = [0];
+          for (let i = 1; i < objects.length; i++) {
+            offsets[i] = new TextEncoder().encode(pdfText).length;
+            pdfText += `${i} 0 obj\n${objects[i]}\nendobj\n`;
+          }
+          const xrefOffset = new TextEncoder().encode(pdfText).length;
+          pdfText += `xref\n0 ${objects.length}\n0000000000 65535 f \n`;
+          for (let i = 1; i < objects.length; i++) pdfText += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+          pdfText += `trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
 
-        section('Vitals & coaching notes');
-        field('Resting heart rate',`${activeClient.restingHR} bpm`);
-        field('Blood pressure',`${activeClient.bpSystolic}/${activeClient.bpDiastolic} mmHg`);
-        field('Sleep / hydration / stress',`${activeClient.sleepHours} h • ${activeClient.hydrationLiters} L • ${activeClient.stressScore}/10`);
-        field('Medical / orthopedic notes',activeClient.medicalNotes||'None recorded');
-
-        section('Recent weight check-ins');
-        const logs=[...(metrics.sortedLogs||[])].reverse().slice(0,12);
-        table(['DATE','WEIGHT','NOTES'],logs.map(v=>[v.date,`${v.weight} kg`,v.notes||'—']),[32,28,cw-60]);
-
-        section('Training split');
-        field('Template',`${activeClient.trainingSplit.templateName} • ${activeClient.trainingSplit.daysPerWeek} days/week`);
-        table(['DAY','FOCUS','EXERCISES','RPE'],activeClient.trainingSplit.schedule.map(v=>[v.day,v.focus,v.exercises,v.rpe]),[25,34,cw-77,18]);
-
-        section('Movement screen');
-        const assess=[
-          ['Bodyweight squat',activeClient.assessments.squatPattern],
-          ['Hip hinge',activeClient.assessments.hipHinge],
-          ['Horizontal push',activeClient.assessments.horizontalPush],
-          ['Horizontal pull',activeClient.assessments.horizontalPull],
-          ['Overhead reach',activeClient.assessments.overheadReach],
-          ['Single-leg & core',activeClient.assessments.singleLegCore]
-        ];
-        table(['ASSESSMENT','SCORE'],assess.map(v=>[v[0],`${v[1]||7}/10`]),[cw-25,25]);
-        field('Coach remarks',activeClient.assessments.coachNotes||'None recorded');
-
-        const pages=doc.getNumberOfPages();
-        for(let p=1;p<=pages;p++){
-          doc.setPage(p);doc.setFont('helvetica','normal');doc.setFontSize(7);doc.setTextColor(125);
-          doc.text('A.FITAMINE • CONFIDENTIAL COACHING RECORD',m,pageH-7);
-          doc.text(`${p} / ${pages}`,pageW-m,pageH-7,{align:'right'});
-        }
-        const safeName=String(activeClient.name||'Client').trim().replace(/[^a-z0-9_-]+/gi,'_');
-        const filename=`AFITAMINE_${safeName}_Dossier.pdf`;
-        try { doc.save(filename); }
-        catch(e) {
-          const url=URL.createObjectURL(doc.output('blob'));
-          const a=document.createElement('a');a.href=url;a.download=filename;a.rel='noopener';
-          document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
+          const pdfBlob = new Blob([pdfText], { type: 'application/pdf' });
+          const blobUrl = URL.createObjectURL(pdfBlob);
+          const link = document.createElement('a');
+          const safeName = clean(activeClient.name).replace(/[^a-z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '') || 'Client';
+          link.href = blobUrl;
+          link.download = `AFITAMINE_${safeName}_Dossier.pdf`;
+          link.style.display = 'none';
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+        } catch (error) {
+          const oldNotice = document.getElementById('pdf-export-error');
+          if (oldNotice) oldNotice.remove();
+          const notice = document.createElement('div');
+          notice.id = 'pdf-export-error';
+          notice.textContent = `PDF export failed: ${error.message || 'Unknown error'}`;
+          notice.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:99999;max-width:420px;padding:12px 16px;border-radius:10px;background:#7f1d1d;color:white;font:600 13px sans-serif;box-shadow:0 8px 30px #0005;';
+          document.body.appendChild(notice);
+          setTimeout(() => notice.remove(), 7000);
+        } finally {
+          if (exportButton) exportButton.disabled = false;
         }
       };
+
       const activeClient = useMemo(
         () => clients.find((c) => c.id === selectedClientId) || clients[0],
         [clients, selectedClientId]
@@ -1097,13 +1262,13 @@
         divider: isBright ? 'border-stone-300/80' : 'border-white/[0.08]',
         activePill: isBright
           ? 'bg-zinc-900 text-white shadow-sm'
-          : 'bg-[#C8F36A] text-[#17210A] shadow-sm',
+          : 'bg-white text-black shadow-sm',
         inactivePill: isBright
           ? 'text-zinc-600 hover:text-zinc-950 hover:bg-black/[0.05]'
           : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]',
         primaryBtn: isBright
           ? 'bg-zinc-900 hover:bg-zinc-800 text-white shadow-sm'
-          : 'bg-[#C8F36A] hover:bg-[#D8FF91] text-[#17210A] shadow-md',
+          : 'bg-white hover:bg-zinc-200 text-black shadow-md',
         secondaryBtn: isBright
           ? 'bg-white hover:bg-stone-100 border-stone-300 text-zinc-800'
           : 'bg-[#0E0E13] hover:bg-white/10 border-white/15 text-zinc-200',
@@ -1298,6 +1463,12 @@ TRAINING ARCHITECTURE:
       const renderBiometrics = () => {
         const leanPct = +(100 - metrics.estimatedBf).toFixed(1);
         const whtr = (activeClient.measurements.waist / activeClient.heightCm).toFixed(2);
+        const healthyWeight = metrics.bmi >= 18.5 && metrics.bmi < 25;
+        const healthyBodyFat = ['Athletic', 'Fitness', 'Average'].includes(metrics.bfCategory);
+        const healthyRhr = activeClient.restingHR >= 60 && activeClient.restingHR <= 100;
+        const healthyBp = activeClient.bpSystolic < 120 && activeClient.bpDiastolic < 80;
+        const healthySleep = activeClient.sleepHours >= 7 && activeClient.sleepHours <= 9;
+        const healthyWhtr = Number(whtr) < 0.5;
 
         return (
           <div className="space-y-6">
@@ -1334,9 +1505,10 @@ TRAINING ARCHITECTURE:
                   </span>
                   <span className={`text-xs font-mono ${ui.textSubtle}`}>BPM</span>
                 </div>
-                <p className="text-[11px] text-emerald-500 font-medium mt-1">
-                  {activeClient.restingHR < 60 ? 'Athletic Autonomic Tone' : 'Normal Sinus Range'}
+                <p className={`text-[11px] font-medium mt-1 ${healthyRhr ? 'text-emerald-500' : 'text-rose-500'}`}>
+                  {healthyRhr ? 'Within typical adult range' : 'Outside typical adult range'}
                 </p>
+                <p className={`text-[10px] mt-1 ${ui.textSubtle}`}>Typical adult reference: 60–100 bpm</p>
               </LuxuryCard>
 
               <LuxuryCard ui={ui} className="p-4">
@@ -1352,11 +1524,12 @@ TRAINING ARCHITECTURE:
                 </div>
                 <p
                   className={`text-[11px] font-medium mt-1 ${
-                    activeClient.bpSystolic <= 120 ? 'text-emerald-500' : 'text-amber-500'
+                    healthyBp ? 'text-emerald-500' : 'text-rose-500'
                   }`}
                 >
-                  {activeClient.bpSystolic <= 120 ? 'Optimal Vascular Pressure' : 'Monitor & Zone 2 Focus'}
+                  {healthyBp ? 'Within normal adult range' : 'Above normal adult range'}
                 </p>
+                <p className={`text-[10px] mt-1 ${ui.textSubtle}`}>Normal adult reference: systolic &lt;120 and diastolic &lt;80 mmHg</p>
               </LuxuryCard>
 
               <LuxuryCard ui={ui} className="p-4">
@@ -1373,6 +1546,7 @@ TRAINING ARCHITECTURE:
                 <p className="text-[11px] text-indigo-500 font-medium mt-1">
                   Quality: {activeClient.sleepQuality}
                 </p>
+                <p className={`text-[10px] mt-1 ${ui.textSubtle}`}>Adult reference: 7–9 hours/night</p>
               </LuxuryCard>
 
               <LuxuryCard ui={ui} className="p-4">
@@ -1461,6 +1635,7 @@ TRAINING ARCHITECTURE:
                   />
                   <InputField
                     label="Current Weight"
+                    status={healthyWeight ? 'healthy' : 'unhealthy'}
                     unit="kg"
                     step="0.1"
                     value={activeClient.weightKg}
@@ -1471,6 +1646,7 @@ TRAINING ARCHITECTURE:
                   />
                   <InputField
                     label="Target Weight"
+                    status={metrics.goalWeightKg >= metrics.minHealthyWeight && metrics.goalWeightKg <= metrics.maxHealthyWeight ? 'healthy' : 'unhealthy'}
                     unit="kg"
                     step="0.1"
                     value={activeClient.goalWeightKg}
@@ -1508,28 +1684,31 @@ TRAINING ARCHITECTURE:
                         Body Fat Estimator
                       </h2>
                     </div>
-                    <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">
+                    <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${healthyBodyFat ? 'bg-emerald-500/15 text-emerald-500 border-emerald-500/30' : 'bg-rose-500/15 text-rose-500 border-rose-500/30'}`}>
                       {metrics.bfCategory}
                     </span>
                   </div>
 
                   {/* Live Body Fat Readout */}
                   <div className={`p-4 rounded-xl border space-y-3 ${ui.insetStrong}`}>
-                    <div className="flex items-baseline justify-between">
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
                       <div>
                         <span className={`text-[10px] uppercase tracking-widest block ${ui.textMuted}`}>
                           Estimated Body Fat (U.S. Navy)
                         </span>
-                        <span className={`text-4xl font-bold font-mono tabular-nums ${ui.heading}`}>
+                        <span className={`text-4xl font-bold font-mono tabular-nums ${healthyBodyFat ? 'text-emerald-500' : 'text-rose-500'}`}>
                           {metrics.estimatedBf}%
                         </span>
                       </div>
-                      <div className="text-right text-xs font-mono">
+                      <div className="text-right text-xs font-mono shrink-0 whitespace-nowrap">
                         <div className="text-emerald-500 font-semibold">LBM: {metrics.leanMassKg} kg</div>
                         <div className="text-amber-500 font-semibold">Fat: {metrics.fatMassKg} kg</div>
                       </div>
                     </div>
 
+                    <p className={`text-[10px] ${ui.textSubtle}`}>
+                      Reference bands used here: men 14–24% • women 21–31% (adult ranges vary with age and source)
+                    </p>
                     <div className="space-y-1">
                       <div className="h-2.5 rounded-full overflow-hidden flex bg-black/20">
                         <div style={{ width: `${leanPct}%` }} className="bg-emerald-500 h-full" />
@@ -1554,6 +1733,7 @@ TRAINING ARCHITECTURE:
                     />
                     <InputField
                       label="Waist Circumference (Navel)"
+                      status={healthyWhtr ? 'healthy' : 'unhealthy'}
                       unit="cm"
                       step="0.5"
                       value={activeClient.measurements.waist}
@@ -1575,9 +1755,10 @@ TRAINING ARCHITECTURE:
                   <span className={ui.textMuted}>
                     Waist-to-Height: <strong className={`font-mono ${ui.heading}`}>{whtr}</strong>
                   </span>
-                  <span className={`font-semibold ${Number(whtr) < 0.5 ? 'text-emerald-500' : 'text-amber-500'}`}>
-                    {Number(whtr) < 0.5 ? 'Optimal (<0.50)' : 'Elevated (≥0.50)'}
+                  <span className={`font-semibold ${healthyWhtr ? 'text-emerald-500' : 'text-rose-500'}`}>
+                    {healthyWhtr ? 'Healthy (<0.50)' : 'Elevated (≥0.50)'}
                   </span>
+                  <span className={`text-[10px] ${ui.textSubtle}`}>Reference: waist less than half of height (&lt;0.50)</span>
                 </div>
               </LuxuryCard>
 
@@ -1593,6 +1774,7 @@ TRAINING ARCHITECTURE:
                 <div className="grid grid-cols-2 gap-4">
                   <InputField
                     label="Resting HR"
+                    status={healthyRhr ? 'healthy' : 'unhealthy'}
                     unit="bpm"
                     value={activeClient.restingHR}
                     onChange={(val) => updateActiveClient({ restingHR: val })}
@@ -1600,6 +1782,7 @@ TRAINING ARCHITECTURE:
                   />
                   <InputField
                     label="Sleep Avg"
+                    status={healthySleep ? 'healthy' : 'unhealthy'}
                     unit="hrs"
                     step="0.1"
                     value={activeClient.sleepHours}
@@ -1608,6 +1791,7 @@ TRAINING ARCHITECTURE:
                   />
                   <InputField
                     label="BP Systolic"
+                    status={healthyBp ? 'healthy' : 'unhealthy'}
                     unit="mmHg"
                     value={activeClient.bpSystolic}
                     onChange={(val) => updateActiveClient({ bpSystolic: val })}
@@ -1615,6 +1799,7 @@ TRAINING ARCHITECTURE:
                   />
                   <InputField
                     label="BP Diastolic"
+                    status={healthyBp ? 'healthy' : 'unhealthy'}
                     unit="mmHg"
                     value={activeClient.bpDiastolic}
                     onChange={(val) => updateActiveClient({ bpDiastolic: val })}
@@ -1716,13 +1901,16 @@ TRAINING ARCHITECTURE:
                       metrics.bmiColor === 'emerald'
                         ? 'bg-emerald-500/15 text-emerald-500 border-emerald-500/35'
                         : metrics.bmiColor === 'amber'
-                        ? 'bg-amber-500/15 text-amber-500 border-amber-500/35'
+                        ? 'bg-rose-500/15 text-rose-500 border-rose-500/35'
                         : 'bg-rose-500/15 text-rose-500 border-rose-500/35'
                     }`}
                   >
                     {metrics.bmiCategory}
                   </span>
                 </div>
+                <p className={`text-[11px] ${ui.textSubtle}`}>
+                  Adult reference: healthy BMI 18.5–24.9 kg/m². BMI is a screening measure, not a diagnosis.
+                </p>
 
                 <div className="space-y-2.5">
                   <div className={`relative h-4 rounded-full overflow-hidden flex border ${ui.insetStrong}`}>
@@ -2785,6 +2973,87 @@ TRAINING ARCHITECTURE:
               }
             />
 
+            {/* NEW: Interactive consultation and physical assessment checklists */}
+            {(() => {
+              const consultationGroups = [
+                { title: 'Goals, Motivation & Past Experience', items: [
+                  'What brings you in right now, and what is your main goal for training?',
+                  'If we check in 8–12 weeks from now, what changes would make you feel like this was a success?',
+                  'Why does reaching this goal matter to you at this point in your life?',
+                  'What types of exercise or physical activities have you enjoyed in the past—and what have you disliked?',
+                  'What usually gets in the way when you try to stay consistent with workouts or healthy habits?'
+                ]},
+                { title: 'Health, Safety & Movement Comfort', items: [
+                  'Have you completed the PAR-Q+ screening, and has a healthcare provider ever placed restrictions on your physical activity?',
+                  'Do you have any past or current injuries, joint stiffness, or surgeries we should keep in mind?',
+                  'Are there any specific movements or positions that trigger discomfort or pain right now?',
+                  'Are you taking any medications or managing health conditions that affect how we plan your sessions?'
+                ]},
+                { title: 'Daily Routine, Time & Support', items: [
+                  'What does a typical workday look like for you (sitting, standing, commuting, travel)?',
+                  'How many days per week and how many minutes per session can you realistically commit right now?',
+                  'Where will you be training (gym, home, outdoors), and what equipment do you have access to?',
+                  'Roughly how many hours of sleep do you usually get per night, and how would you rate your stress and energy lately?',
+                  'How do you prefer to be coached—direct cues, gentle accountability, lots of explanation, or keeping things simple?'
+                ]}
+              ];
+              const physicalGroups = [
+                { title: '1. Pre-Movement Prep & Vitals (If Applicable)', items: [
+                  'Confirm client is warmed up lightly and wearing comfortable movement attire and supportive footwear',
+                  'Record consented baseline metrics only if relevant and agreed upon (e.g., resting heart rate, blood pressure if measured, weight/measurements)'
+                ]},
+                { title: '2. Foundational Movement Screen (5–8 Controlled Reps Each)', items: [
+                  'Squat Pattern (Bodyweight or Overhead Squat): Check ankle dorsiflexion (heels down), knee tracking (no valgus cave-in), hip depth, and torso/spinal control',
+                  'Hip Hinge Pattern (Dowel Hinge or Bodyweight Good Morning): Check hip shift backward, neutral spine alignment, and hamstring tension without lumbar rounding',
+                  'Single-Leg Pattern (Reverse Lunge or Split Squat): Check balance, pelvic/hip stability, front knee alignment, and rear hip extension',
+                  'Horizontal/Vertical Push (Wall, Incline, or Floor Push-Up; Overhead Press): Check shoulder blade glide, ribcage/core bracing, and elbow path',
+                  'Horizontal/Vertical Pull (Ring/TRX Row or Band Row; Lat Pulldown/Reach): Check scapular retraction/depression, neck tension, and shoulder range of motion',
+                  'Core & Anti-Rotation/Extension (Plank or Dead Bug): Check ability to maintain neutral pelvis and ribs without sagging or holding breath'
+                ]},
+                { title: '3. Sub-Maximal Performance & Cardio Baseline (2–3 Tests)', items: [
+                  'Core Endurance: Timed front plank or forearm plank (or controlled dead-bug reps) until form breaks—log time/reps and point of compensation',
+                  'Muscular Endurance / Strength Estimate: Max good-form incline/floor push-ups, 60-second wall sit/squats, or a controlled 5–8 rep set at a moderate load (leaving 2–3 reps in reserve)',
+                  'Cardiovascular / Recovery Check: 3-minute step test, 10-minute brisk walk/jog, or short row/bike effort—log pace/output and heart rate or perceived exertion (RPE) immediately and 1 minute post-effort'
+                ]}
+              ];
+              const ChecklistCard = ({ title, groups, storageKey }) => {
+                const checked = activeClient.assessments[storageKey] || [];
+                const total = groups.reduce((sum, group) => sum + group.items.length, 0);
+                const done = checked.length;
+                return (
+                  <LuxuryCard ui={ui} className="p-5 space-y-4">
+                    <div className={`flex flex-wrap items-center justify-between gap-3 border-b pb-3 ${ui.divider}`}>
+                      <div><h3 className={`text-sm font-bold uppercase tracking-wide ${ui.heading}`}>{title}</h3><p className={`text-xs mt-1 ${ui.textMuted}`}>{done} of {total} completed</p></div>
+                      <div className={`text-sm font-mono font-semibold ${ui.textSecondary}`}>{Math.round(done / total * 100)}%</div>
+                    </div>
+                    <div className={`h-1.5 rounded-full overflow-hidden ${ui.inset}`}><div className="h-full bg-emerald-500 rounded-full transition-all" style={{ width: `${done / total * 100}%` }} /></div>
+                    <div className="space-y-4">
+                      {groups.map((group, gi) => {
+                        const base = groups.slice(0, gi).reduce((sum, g) => sum + g.items.length, 0);
+                        const groupDone = group.items.filter((_, qi) => checked.includes(base + qi)).length;
+                        return <div key={group.title} className="space-y-2">
+                          <div className={`text-[11px] uppercase tracking-wider font-semibold ${ui.textMuted}`}>{group.title} <span className="font-mono normal-case">({groupDone}/{group.items.length})</span></div>
+                          {group.items.map((question, qi) => {
+                            const itemId = base + qi;
+                            const isChecked = checked.includes(itemId);
+                            return <label key={itemId} className={`flex gap-3 items-start rounded-xl border p-3 cursor-pointer transition-colors ${isChecked ? 'border-emerald-500/30 bg-emerald-500/5' : ui.inset}`}>
+                              <input type="checkbox" checked={isChecked} onChange={(e) => updateAssessment(storageKey, e.target.checked ? [...checked, itemId] : checked.filter(x => x !== itemId))} className="mt-0.5 shrink-0 accent-emerald-500" />
+                              <span className={`text-xs leading-relaxed ${isChecked ? ui.textMuted : ui.textSecondary}`}>{question}</span>
+                            </label>;
+                          })}
+                        </div>;
+                      })}
+                    </div>
+                  </LuxuryCard>
+                );
+              };
+              return <div className="space-y-5">
+                <ChecklistCard title="Checklist 1: Consultation Question Checklist" groups={consultationGroups} storageKey="consultationChecklist" />
+                <ChecklistCard title="Checklist 2: Complete Physical Assessment Checklist" groups={physicalGroups} storageKey="physicalAssessmentChecklist" />
+              </div>;
+            })()}
+
+
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
               <LuxuryCard ui={ui} className="lg:col-span-7 p-6 space-y-5">
                 <div className={`flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b ${ui.divider}`}>
@@ -2973,10 +3242,11 @@ TRAINING ARCHITECTURE:
                   <button
                     type="button"
                     onClick={handleExportPdfDossier}
+                    data-pdf-export
                     className={`px-3.5 py-2 rounded-xl border text-xs font-medium flex items-center gap-1.5 transition-all ${ui.secondaryBtn}`}
                   >
-                    <Icon name="printer" className="w-4 h-4" />
-                    <span>Export Client PDF</span>
+                    <Icon name="download" className="w-4 h-4" />
+                    <span>Download Client PDF</span>
                   </button>
                 </div>
               }
@@ -2984,12 +3254,12 @@ TRAINING ARCHITECTURE:
 
             <LuxuryCard ui={ui} highlight className="p-6 sm:p-8 space-y-8">
               {/* Header Banner */}
-              <div className={`flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b ${ui.divider}`}>
-                <div className="flex items-center gap-4">
+              <div className={`flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-6 border-b ${ui.divider}`}>
+                <div className="flex items-center gap-4 min-w-0 flex-1">
                   <div className={`w-16 h-16 rounded-2xl border flex items-center justify-center p-2 shadow-md ${ui.logoBadge}`}>
                     <AFitamineLogo className="w-12 h-12" variant="white" />
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <div className="flex items-center gap-2.5">
                       <span className={`text-sm font-black tracking-tight uppercase ${ui.heading}`}>
                         A.FITAMINE
@@ -3011,20 +3281,20 @@ TRAINING ARCHITECTURE:
                   </div>
                 </div>
 
-                <div className="flex flex-wrap gap-3 text-xs">
-                  <div className={`px-3.5 py-2 rounded-xl border ${ui.insetStrong}`}>
+                <div className="flex flex-nowrap items-center justify-end gap-2 sm:gap-2.5 text-xs shrink-0">
+                  <div className={`px-3 py-2 rounded-xl border whitespace-nowrap ${ui.insetStrong}`}>
                     <span className={`block ${ui.textMuted}`}>Current Weight</span>
                     <strong className={`font-mono text-sm ${ui.heading}`}>
                       {activeClient.weightKg} kg
                     </strong>
                   </div>
-                  <div className={`px-3.5 py-2 rounded-xl border ${ui.insetStrong}`}>
+                  <div className={`px-3 py-2 rounded-xl border whitespace-nowrap ${ui.insetStrong}`}>
                     <span className={`block ${ui.textMuted}`}>Target Weight</span>
                     <strong className="text-emerald-500 font-mono text-sm">
                       {activeClient.goalWeightKg} kg
                     </strong>
                   </div>
-                  <div className={`px-3.5 py-2 rounded-xl border ${ui.insetStrong}`}>
+                  <div className={`px-3 py-2 rounded-xl border whitespace-nowrap ${ui.insetStrong}`}>
                     <span className={`block ${ui.textMuted}`}>Projected Goal Date</span>
                     <strong className={`text-sm ${ui.heading}`}>{metrics.formattedTargetDate}</strong>
                   </div>
@@ -3201,13 +3471,13 @@ TRAINING ARCHITECTURE:
       // MAIN LAYOUT SHELL
       // ============================================================================
       return (
-        <div className={`af-shell ${isBright ? 'af-bright' : ''} min-h-screen flex flex-col lg:flex-row transition-colors duration-300 ${ui.page}`}>
+        <div className={`min-h-screen flex flex-col lg:flex-row transition-colors duration-300 ${ui.page}`}>
           {/* LEFT SIDEBAR NAVIGATION (Desktop) */}
           <aside
-            className={`af-sidebar hidden lg:flex lg:w-72 lg:flex-col lg:fixed lg:inset-y-0 border-r z-30 transition-colors duration-300 no-print ${ui.shell}`}
+            className={`hidden lg:flex lg:w-72 lg:flex-col lg:fixed lg:inset-y-0 border-r z-30 transition-colors duration-300 no-print ${ui.shell}`}
           >
             <div className={`p-6 border-b flex items-center gap-3.5 ${ui.divider}`}>
-              <div className={`af-brand-mark w-11 h-11 rounded-xl border flex items-center justify-center p-1.5 shrink-0 ${ui.logoBadge}`}>
+              <div className={`w-11 h-11 rounded-xl border flex items-center justify-center p-1.5 shrink-0 ${ui.logoBadge}`}>
                 <AFitamineLogo className="w-8 h-8" variant="white" />
               </div>
               <div>
@@ -3228,8 +3498,8 @@ TRAINING ARCHITECTURE:
                     key={item.id}
                     type="button"
                     onClick={() => setActiveTab(item.id)}
-                    className={`af-nav-item w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-xs font-semibold transition-all ${
-                      isActive ? `af-nav-item-active ${ui.activePill}` : ui.inactivePill
+                    className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-xs font-semibold transition-all ${
+                      isActive ? ui.activePill : ui.inactivePill
                     }`}
                   >
                     <div className="flex items-center gap-3">
@@ -3262,7 +3532,7 @@ TRAINING ARCHITECTURE:
 
           {/* MAIN CONTENT AREA */}
           <div className="flex-1 lg:pl-72 flex flex-col min-w-0 relative z-10">
-            <header className={`af-topbar sticky top-0 z-20 backdrop-blur-xl border-b px-4 sm:px-8 py-3.5 transition-colors duration-300 no-print ${ui.header}`}>
+            <header className={`sticky top-0 z-20 backdrop-blur-xl border-b px-4 sm:px-8 py-3.5 transition-colors duration-300 no-print ${ui.header}`}>
               <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
                 {/* Mobile Brand + Menu */}
                 <div className="flex items-center gap-2.5 lg:hidden">
@@ -3273,7 +3543,7 @@ TRAINING ARCHITECTURE:
                   >
                     <Icon name={mobileMenuOpen ? 'x' : 'menu'} className="w-5 h-5" />
                   </button>
-                  <div className={`af-brand-mark w-8 h-8 rounded-lg border flex items-center justify-center p-1 ${ui.logoBadge}`}>
+                  <div className={`w-8 h-8 rounded-lg border flex items-center justify-center p-1 ${ui.logoBadge}`}>
                     <AFitamineLogo className="w-6 h-6" variant="white" />
                   </div>
                   <div className="leading-none">
@@ -3406,7 +3676,7 @@ TRAINING ARCHITECTURE:
               </div>
             )}
 
-            <main className="af-main flex-1 px-4 sm:px-8 py-6 sm:py-8 max-w-7xl w-full mx-auto">
+            <main className="flex-1 px-4 sm:px-8 py-6 sm:py-8 max-w-7xl w-full mx-auto">
               {activeTab === 'biometrics' && renderBiometrics()}
               {activeTab === 'bmi' && renderBmiPrediction()}
               {activeTab === 'metabolic' && renderMetabolicEngine()}
@@ -3423,7 +3693,7 @@ TRAINING ARCHITECTURE:
               <LuxuryCard ui={ui} highlight className="w-full max-w-md p-6 space-y-5">
                 <div className={`flex items-center justify-between pb-3 border-b ${ui.divider}`}>
                   <div className="flex items-center gap-2.5">
-                    <div className={`af-brand-mark w-7 h-7 rounded-lg border flex items-center justify-center p-1 ${ui.logoBadge}`}>
+                    <div className={`w-7 h-7 rounded-lg border flex items-center justify-center p-1 ${ui.logoBadge}`}>
                       <AFitamineLogo className="w-5 h-5" variant="white" />
                     </div>
                     <h3 className={`text-base font-bold ${ui.heading}`}>
